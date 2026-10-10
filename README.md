@@ -1,6 +1,8 @@
-# offcode-agent
+# agents-workers
 
 部署在 Cloudflare Workers 免費版中的 AI Agent。
+
+GitHub 倉庫：[`scupro/agents-workers`](https://github.com/scupro/agents-workers)
 
 ## 功能
 
@@ -44,7 +46,7 @@ agents/
 | 路由/決策 | `@cf/cloudflare/clef-flash` | `ROUTER_MODEL` |
 | Agent/對話 | `@cf/meta/llama-3.1-8b-instruct-fp8-fast` → 回退 `…-fp8` | `AGENT_MODEL` / `AGENT_MODEL_FALLBACK` |
 | 代碼 | `@cf/mistralai/mistral-small-3.1-24b-instruct` → 回退 `@cf/mistral/…`（舊 slug） | `CODE_MODEL` / `CODE_MODEL_FALLBACK` |
-| 外接(自動/手動) | `OPENAI_MODEL`(代碼可用 `OPENAI_CODE_MODEL`) | 見 wrangler.json |
+| 外接(自動/手動) | `LLM_MODEL`(代碼可用 `LLM_CODE_MODEL`) | `LLM_API_KEY` / `LLM_BASE_URL` |
 
 路由失敗(本地開發、模型下線、無綁定)自動降級為關鍵詞启发式,**永不因分類不可用而阻斷對話**。
 
@@ -105,13 +107,15 @@ npx wrangler d1 migrations apply agent-db
 
 ### 4. 配置外接 API Key(推薦,額度用盡自動切換需要)
 
-生產環境建議用加密變量而非寫在 wrangler.json:
-
 ```bash
-npx wrangler secret put OPENAI_API_KEY
+# 金鑰用 secret(加密存儲)
+npx wrangler secret put LLM_API_KEY
+
+# 其餘(非敏感)可寫在 wrangler.json vars 中:
+#   "vars": { "LLM_BASE_URL": "https://api.openrouter.ai/v1", "LLM_MODEL": "deepseek/deepseek-chat-v3-0324", "LLM_CODE_MODEL": "deepseek/deepseek-chat-v3-0324" }
 ```
 
-`OPENAI_BASE_URL` / `OPENAI_MODEL` / `OPENAI_CODE_MODEL` 可在 wrangler.json `vars` 調整,兼容任何 OpenAI 格式 API(OpenRouter、Groq、DeepSeek、Moonshot 等)。若完全不想用外接 API,可保持留空——此時只用 Workers AI,無自動降級。
+兼容任何 OpenAI 格式 API(OpenRouter、Groq、DeepSeek、Moonshot、DeepInfra 等)。若完全不想用外接 API,可保持留空——此時只用 Workers AI,無自動降級。
 
 ### 5. 部署
 
@@ -119,7 +123,67 @@ npx wrangler secret put OPENAI_API_KEY
 npx wrangler deploy
 ```
 
-打開 `https://offcode-agent.<你的子域>.workers.dev` 即可使用。
+打開 `https://agents-workers.<你的子域>.workers.dev` 即可使用。
+
+## 通過 GitHub Actions 自動部署
+
+推送到 `main` 分支會自動觸發部署。
+
+### 1. 添加 GitHub Secrets
+
+在 GitHub 倉庫 [Settings → Secrets and variables → Actions](https://github.com/scupro/agents-workers/settings/secrets/actions) 添加：
+
+**必填：**
+
+| Secret | 說明 | 來源 |
+|--------|------|------|
+| `CF_API_TOKEN` | Cloudflare API Token(有 Workers 部署權限) | Cloudflare Dashboard → My Profile → API Tokens |
+| `CF_ACCOUNT_ID` | Cloudflare 帳號 ID | Cloudflare Dashboard → 右上角帳號名 → Account ID |
+| `D1_DATABASE_ID` | D1 數據庫 ID | `npx wrangler d1 info` 或 Dashboard → D1 → Database → ID |
+| `KV_DOCS_ID` | KV 命名空間 ID | `npx wrangler kv:namespace list` 或 Dashboard → KV → Namespace → ID |
+
+**可選**(啟用外接 API 降級)：
+
+| Secret | 說明 | 範例 |
+|--------|------|------|
+| `LLM_API_KEY` | 外接 LLM API 金鑰 | `sk-or-...`(OpenRouter)、`sk-...`(DeepSeek) |
+| `LLM_BASE_URL` | API Base URL(OpenAI 兼容) | `https://api.openrouter.ai/v1` |
+| `LLM_MODEL` | 外接模型名 | `deepseek/deepseek-chat-v3-0324` |
+| `LLM_CODE_MODEL` | 代碼模型名(可省略,默認同 LLM_MODEL) | — |
+
+**可選 Variables**(在 [Settings → Variables](https://github.com/scupro/agents-workers/settings/variables/actions) 添加)：
+
+| Variable | 說明 | 默認值 |
+|----------|------|--------|
+| `NEURON_SAFE_LIMIT` | 每日 Neurons 安全線(超過自動切換外接) | `8000` |
+
+### 2. 確認 wrangler.json 中的佔位符
+
+`.github/workflows/deploy.yml` 會在部署前用 `sed` 替換 `wrangler.json` 中的：
+
+```json
+"d1_databases": [{ "database_id": "${D1_DATABASE_ID}", ... }],
+"kv_namespaces": [{ "id": "${KV_DOCS_ID}", ... }]
+```
+
+確保這些佔位符與 secrets 中的 key 名稱一致。
+
+### 3. 啟用 LLM 降級(可選)
+
+如需自動切換外接 API,在 `.github/workflows/deploy.yml` 的 `Deploy` step 的 `env:` 中取消註釋：
+
+```yaml
+env:
+  CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+  CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+  LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+  LLM_MODEL: ${{ secrets.LLM_MODEL }}
+  LLM_CODE_MODEL: ${{ secrets.LLM_CODE_MODEL }}
+  NEURON_SAFE_LIMIT: ${{ vars.NEURON_SAFE_LIMIT }}
+```
+
+> **注意**：`wrangler-action` 的 `env` 中的變量會作為 `wrangler secret` 注入 Worker(加密)。`LLM_BASE_URL` 和 `LLM_MODEL` 其實不敏感,也可寫入 wrangler.json `vars` 避免每次都用 secret 覆蓋。
 
 ## 本地開發
 
@@ -133,7 +197,7 @@ npx wrangler dev
 ## 瀏覽器本地存儲(降級路徑)
 
 後端不可達時(如 `wrangler dev` 未綁定 D1/KV),前端自動降級:
-- 會話列表快取在 `localStorage`(`offcode.sessions`)
+- 會話列表快取在 `localStorage`(`agents-workers.sessions`)
 - 消息歷史仍以後端 D1 為準;若需完全離線運行,可在 `public/app.js`
   的 `send()` 錯誤分支擴展本地消息存儲
 當前默認使用 D1 + KV(免費額度足夠個人使用):
