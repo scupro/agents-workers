@@ -1,0 +1,42 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: npm ci --include=dev
+
+      - name: Inject D1/KV ids
+        run: |
+          sed -i "s|\${D1_DATABASE_ID}|${{ secrets.D1_DATABASE_ID }}|g" wrangler.json
+          sed -i "s|\${KV_DOCS_ID}|${{ secrets.KV_DOCS_ID }}|g" wrangler.json
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          # Optional custom API fallback (OpenAI-compatible) — set in GitHub Secrets:
+          # LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          # LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          # LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          # LLM_CODE_MODEL: ${{ secrets.LLM_CODE_MODEL }}
+          # NEURON_SAFE_LIMIT: ${{ vars.NEURON_SAFE_LIMIT }}

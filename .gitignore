@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+dist/
+*.log
+# SSH deploy key - private key stays local, never commit to repo
+deploy-key
+deploy-key.pub

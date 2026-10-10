@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OffCode Agent</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <h1>OffCode</h1>
+      <button id="new-chat" title="New chat">＋</button>
+    </div>
+    <nav id="session-list"></nav>
+    <footer id="settings-panel">
+      <label>Provider
+        <select id="model-select">
+          <option value="auto">Auto — 智能路由 (clef-flash)</option>
+          <option value="workers_ai">Workers AI (免費,不切換)</option>
+          <option value="custom">自訂 API (手動強制)</option>
+        </select>
+      </label>
+      <label>Skills
+        <select id="skills-select" multiple size="4">
+          <option value="general" selected>General</option>
+          <option value="code" selected>Code</option>
+          <option value="docs" selected>Documents</option>
+          <option value="memory" selected>Memory</option>
+        </select>
+      </label>
+      <small id="usage-line">skills apply to next message</small>
+    </footer>
+  </aside>
+
+  <main>
+    <header id="chat-header">
+      <span id="chat-title">New chat</span>
+      <span id="health-dot" title=""></span>
+    </header>
+    <div id="messages"></div>
+    <div id="composer">
+      <textarea id="input" placeholder="Type a message… (Shift+Enter for newline)" rows="2"></textarea>
+      <button id="send">Send</button>
+    </div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

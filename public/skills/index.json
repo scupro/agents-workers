@@ -1,0 +1,32 @@
+[
+  {
+    "id": "code-review",
+    "name": "code-review",
+    "description": "Review the changes since a fixed point (commit, branch, tag, or merge-base) along two axes: Standards (does the code follow this repo's documented coding standards?) and Spec (does the code match what the originating issue/spec asked for?). Runs both reviews in parallel sub-agents and reports them side by side. Use when the user wants to review a branch, a PR, work-in-progress changes, or asks to \\\"review since X\\\".",
+    "bytes": 6640
+  },
+  {
+    "id": "implement",
+    "name": "implement",
+    "description": "Implement a piece of work based on a spec or set of tickets.",
+    "bytes": 622
+  },
+  {
+    "id": "pr",
+    "name": "pr",
+    "description": "Use when writing a PR body.",
+    "bytes": 4107
+  },
+  {
+    "id": "research",
+    "name": "research",
+    "description": "Investigate a question against high-trust primary sources and capture the findings as a Markdown file in the repo. Use when the user wants a topic researched, docs or API facts gathered, or reading legwork delegated to a background agent.",
+    "bytes": 794
+  },
+  {
+    "id": "tdd",
+    "name": "tdd",
+    "description": "Test-driven development. Use when the user wants to build features or fix bugs test-first, mentions \"red-green-refactor\", or wants integration tests.",
+    "bytes": 3621
+  }
+]

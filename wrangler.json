@@ -1,0 +1,49 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "offcode-agent",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./public"
+  },
+  "migrations": [],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_id": "${D1_DATABASE_ID}",
+      "database_name": "agent-db",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "DOCS",
+      "id": "${KV_DOCS_ID}"
+    }
+  ],
+  "ai": {
+    "binding": "AI",
+    "models": [
+      "@cf/cloudflare/clef-flash",
+      "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
+      "@cf/meta/llama-3.1-8b-instruct-fp8",
+      "@cf/mistralai/mistral-small-3.1-24b-instruct",
+      "@cf/mistral/mistral-small-3.1-24b-instruct"
+    ]
+  },
+  "vars": {
+    "ROUTER_MODEL": "@cf/cloudflare/clef-flash",
+    "AGENT_MODEL": "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
+    "AGENT_MODEL_FALLBACK": "@cf/meta/llama-3.1-8b-instruct-fp8",
+    "CODE_MODEL": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+    "CODE_MODEL_FALLBACK": "@cf/mistral/mistral-small-3.1-24b-instruct",
+    "NEURON_FREE_LIMIT": "10000",
+    "NEURON_SAFE_LIMIT": "8000",
+    "LLM_API_KEY": "",
+    "LLM_BASE_URL": "",
+    "LLM_MODEL": "",
+    "LLM_CODE_MODEL": ""
+  }
+}

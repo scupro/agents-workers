@@ -1,0 +1,16 @@
+{
+  "name": "offcode-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node e2e_test.js && node e2e_loop_test.js",
+    "db:init": "wrangler d1 create agent-db",
+    "kv:create": "wrangler kv:namespace create DOCS"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
