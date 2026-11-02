@@ -59,6 +59,12 @@ async function callWorkersAISmart(env, messages, task) {
   throw lastErr;
 }
 
+// Defensive: strict relays (e.g. C++/nlohmann-json based) reject null fields.
+// Keep only role + string content before sending to an external API.
+export function sanitizeMessages(messages) {
+  return messages.map((m) => ({ role: m.role, content: String(m.content ?? "") }));
+}
+
 // ---- Custom LLM endpoint (any OpenAI-compatible format: OpenAI, OpenRouter,
 // DeepSeek, Moonshot, Groq, Ollama, vLLM, local/free relays, ...) ----
 async function callCustom(env, messages, task) {
@@ -74,7 +80,7 @@ async function callCustom(env, messages, task) {
       "Content-Type": "application/json",
       ...(env.LLM_AUTH_HEADER ? { [env.LLM_AUTH_HEADER]: env.LLM_API_KEY } : { Authorization: "Bearer " + env.LLM_API_KEY }),
     },
-    body: JSON.stringify({ model, messages, temperature: 0.4 }),
+    body: JSON.stringify({ model, messages: sanitizeMessages(messages), temperature: 0.4 }),
   });
   if (!res.ok) {
     const t = await res.text().catch(() => "");

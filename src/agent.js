@@ -20,7 +20,17 @@ export async function runAgent({ env, sessionId, userMessage, model, systemPromp
   const provider = model || "auto";
 
   // 1. Classify task once (reused for every round → consistent routing, cheap)
-  const history = await getMessages(env, sessionId, MAX_HISTORY);
+  const rows = await getMessages(env, sessionId, MAX_HISTORY);
+  // handleChat() has already stored the current user message, so drop it here
+  // (it is appended explicitly below) to avoid sending it twice.
+  const last = rows[rows.length - 1];
+  if (last && last.role === "user" && last.content === userMessage) rows.pop();
+  // Only role + content go to the model. The raw D1 rows also carry
+  // tool_name / tool_call_id / tool_result / created_at (often NULL), which
+  // strict OpenAI-compatible relays reject: "type must be string, but is null".
+  const history = rows
+    .filter((r) => r.role === "user" || r.role === "assistant")
+    .map((r) => ({ role: r.role, content: String(r.content ?? "") }));
   const { task, source } = await classifyTask(env, userMessage);
 
   const memoryBlock = await getMemoryBlock(env, 20);
