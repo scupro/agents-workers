@@ -18,6 +18,8 @@
 //   ai:exhausted:YYYY-MM-DD   "1" once quota error seen today
 //   ai:provider-override      manual lock (persistent, not date-scoped)
 
+import { readSSE, chunkText } from "./sse.js";
+
 const DAY = 60 * 60 * 24;
 
 export function todayKey() {
@@ -122,6 +124,32 @@ export async function runAI(env, model, args) {
   const est = estimateNeurons(model, inputText, outText, usage);
   await addNeurons(env, est).catch(() => {}); // never let accounting break the call
   return res;
+}
+
+// Streaming variant: same accounting, but consumes the SSE stream and forwards
+// each text delta to onDelta. Returns { text, usage }.
+export async function runAIStream(env, model, args, onDelta) {
+  const inputText = JSON.stringify(args);
+  const res = await env.AI.run(model, { ...args, stream: true });
+  let text = "";
+  let usage = null;
+  if (res && typeof res.getReader === "function") {
+    await readSSE(res, async (payload) => {
+      let obj;
+      try { obj = JSON.parse(payload); } catch { return; }
+      if (obj?.usage) usage = obj.usage;
+      const t = chunkText(obj);
+      if (t) { text += t; await onDelta(t); }
+    });
+  } else {
+    // binding returned a plain (non-stream) result → treat as one chunk
+    text = typeof res === "string" ? res : (res?.response ?? res?.text ?? JSON.stringify(res));
+    usage = res?.usage || null;
+    if (text) await onDelta(text);
+  }
+  const est = estimateNeurons(model, inputText, text, usage);
+  await addNeurons(env, est).catch(() => {});
+  return { text, usage };
 }
 
 // ---- quota error detection (CF rejects beyond plan) ----

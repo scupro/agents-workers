@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "node e2e_test.js && node e2e_loop_test.js",
+    "test": "node e2e_test.js && node e2e_loop_test.js && node e2e_stream_test.js",
     "db:init": "wrangler d1 create agent-db",
     "kv:create": "wrangler kv:namespace create DOCS"
   },

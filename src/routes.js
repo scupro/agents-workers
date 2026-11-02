@@ -45,34 +45,78 @@ export async function handleChat(request, env, ctx) {
 
   await appendMessage(env, sessionId, "user", message);
 
-  try {
-    const result = await runAgent({
-      env,
-      sessionId,
-      userMessage: message,
-      model: normalizeProvider(body.model), // "auto" | "workers_ai" | "custom" | null
-      systemPrompt: body.systemPrompt,
-      skills: body.skills,
-    });
-
-    await appendMessage(env, sessionId, "assistant", result.content,
+  const params = {
+    env,
+    sessionId,
+    userMessage: message,
+    model: normalizeProvider(body.model), // "auto" | "workers_ai" | "custom" | null
+    systemPrompt: body.systemPrompt,
+    skills: body.skills,
+  };
+  const persist = (result) =>
+    appendMessage(env, sessionId, "assistant", result.content,
       result.toolCalls?.length ? result.toolCalls[0].tool : null,
       null,
       result.toolCalls?.length ? JSON.stringify(result.toolCalls) : null);
 
-    return jsonResponse({
-      sessionId,
-      content: result.content,
-      toolCalls: result.toolCalls,
-      modelUsed: result.modelUsed,
-      providerUsed: result.providerUsed,
-      task: result.task,
-      routedBy: result.routedBy,
-    });
-  } catch (e) {
-    console.error("chat error:", e);
-    return jsonResponse({ error: e.message || String(e), sessionId }, 500);
+  // Legacy blocking JSON mode (tests / simple clients): { stream: false }
+  if (body.stream === false) {
+    try {
+      const result = await runAgent(params);
+      await persist(result);
+      return jsonResponse({
+        sessionId, content: result.content, toolCalls: result.toolCalls,
+        modelUsed: result.modelUsed, providerUsed: result.providerUsed,
+        task: result.task, routedBy: result.routedBy,
+      });
+    } catch (e) {
+      console.error("chat error:", e);
+      return jsonResponse({ error: e.message || String(e), sessionId }, 500);
+    }
   }
+
+  // Default: Server-Sent Events. Headers go out immediately and a heartbeat
+  // keeps bytes flowing, so Cloudflare's ~100-125 s "no response" timeout (524)
+  // can't trigger while a slow model is thinking. Workers have no wall-clock
+  // limit on HTTP requests while the client stays connected, and time spent
+  // awaiting fetch()/AI doesn't count toward the 10 ms free-tier CPU budget.
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const enc = new TextEncoder();
+  let chain = Promise.resolve();
+  const raw = (str) => { chain = chain.then(() => writer.write(enc.encode(str))).catch(() => {}); return chain; };
+  const send = (obj) => raw("data: " + JSON.stringify(obj) + "\n\n");
+
+  const run = async () => {
+    const hb = setInterval(() => raw(": ping\n\n"), 10000);
+    try {
+      await send({ type: "start", sessionId });
+      const result = await runAgent({ ...params, onEvent: send });
+      await persist(result);
+      await send({
+        type: "done", sessionId, content: result.content,
+        modelUsed: result.modelUsed, providerUsed: result.providerUsed,
+        task: result.task, routedBy: result.routedBy,
+      });
+    } catch (e) {
+      console.error("chat error:", e);
+      await send({ type: "error", error: e.message || String(e), sessionId });
+    } finally {
+      clearInterval(hb);
+      await chain;
+      await writer.close().catch(() => {});
+    }
+  };
+  ctx.waitUntil(run());
+
+  return new Response(readable, {
+    headers: {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
 }
 
 // /api/sessions  GET all, POST create, DELETE ?id=

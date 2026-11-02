@@ -139,31 +139,77 @@ async function send() {
         owner: "browser",
       }),
     });
-    const data = await r.json();
 
-    if (!r.ok) {
-      userNode.querySelector(".meta").textContent = "OffCode (error)";
-      userNode.lastElementChild.textContent = "⚠ " + (data.error || "request failed");
-      userNode.lastElementChild.parentElement.style.color = "#ef5350";
+    const metaEl = userNode.querySelector(".meta");
+    const bodyEl = userNode.querySelector(".meta").nextElementSibling;
+    const taskLabel = { code: "💻 代碼", agent: "🤖 Agent", chat: "💬 對話" };
+    const fail = (msg) => {
+      metaEl.textContent = "OffCode (error)";
+      bodyEl.textContent = "⚠ " + msg;
+      userNode.style.color = "#ef5350";
+    };
+
+    // Validation errors (400/404) are plain JSON; everything else is an SSE stream.
+    if (!r.ok || !/text\/event-stream/i.test(r.headers.get("content-type") || "")) {
+      const data = await r.json().catch(() => ({}));
+      fail(data.error || "request failed (" + r.status + ")");
     } else {
-      userNode.querySelector(".meta").textContent =
-        "OffCode · " + (data.modelUsed || "model") +
-        (data.task ? " · " + ({ code: "💻 代碼", agent: "🤖 Agent", chat: "💬 對話" }[data.task] || data.task) : "") +
-        (data.routedBy ? " · via " + data.routedBy : "");
-      userNode.lastElementChild.textContent = data.content || "";
-      if (data.sessionId && !currentSession) {
-        currentSession = data.sessionId;
+      let acc = "", info = {}, gotDone = false;
+      const handle = (ev) => {
+        if (ev.type === "start") {
+          if (ev.sessionId && !currentSession) currentSession = ev.sessionId;
+        } else if (ev.type === "meta") {
+          info.task = ev.task; info.routedBy = ev.routedBy;
+        } else if (ev.type === "delta") {
+          acc += ev.text;
+          bodyEl.textContent = acc;
+        } else if (ev.type === "reset") {
+          acc = ""; bodyEl.textContent = "…";
+        } else if (ev.type === "tool") {
+          const block = document.createElement("div");
+          block.className = "tool-block" + (ev.result && ev.result.ok === false ? " error" : "");
+          block.textContent = "🔧 " + ev.tool + " → " + JSON.stringify(ev.result, null, 2).slice(0, 600);
+          userNode.appendChild(block);
+        } else if (ev.type === "round_meta") {
+          info.modelUsed = ev.modelUsed;
+        } else if (ev.type === "done") {
+          gotDone = true;
+          info = { ...info, ...ev };
+          if (!acc && ev.content) bodyEl.textContent = ev.content;
+        } else if (ev.type === "error") {
+          gotDone = true;
+          fail(ev.error || "request failed");
+        }
+        if (!gotDone || ev.type === "done") {
+          metaEl.textContent =
+            "OffCode · " + (info.modelUsed || "…") +
+            (info.task ? " · " + (taskLabel[info.task] || info.task) : "") +
+            (info.routedBy ? " · via " + info.routedBy : "");
+        }
+        $messages.scrollTop = $messages.scrollHeight;
+      };
+
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) !== -1) {
+          const chunk = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue; // ": ping" heartbeat
+          try { handle(JSON.parse(line.slice(5).trim())); } catch { /* ignore bad chunk */ }
+        }
       }
-      // show tool calls
-      const tools = (data.toolCalls || []).filter((t) => t.result);
-      for (const t of tools) {
-        const block = document.createElement("div");
-        block.className = "tool-block" + (t.result.ok === false ? " error" : "");
-        block.textContent = "🔧 " + t.tool + " → " + JSON.stringify(t.result, null, 2).slice(0, 600);
-        userNode.appendChild(block);
+      if (!gotDone) {
+        metaEl.textContent = "OffCode (interrupted)";
+        bodyEl.textContent = acc + "\n\n⚠ connection closed before the reply finished";
       }
-      // first-time session: refresh list
-      if (data.sessionId) {
+      if (info.sessionId || currentSession) {
         $chatTitle.textContent = text.slice(0, 40);
         renderSessions();
       }

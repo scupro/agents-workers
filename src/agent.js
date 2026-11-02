@@ -16,7 +16,11 @@ const MAX_HISTORY = 30;      // messages fed back in
 // Tools always available regardless of skill selection
 const CORE_TOOLS = ["list_skills", "read_skill"];
 
-export async function runAgent({ env, sessionId, userMessage, model, systemPrompt, skills }) {
+// onEvent (optional): streaming callback. Emits
+//   {type:"meta", task, routedBy}  {type:"delta", text}  {type:"reset"}
+//   {type:"tool", tool, args, result}  {type:"round_meta", modelUsed, providerUsed}
+// Without it the behaviour is unchanged (single blocking result).
+export async function runAgent({ env, sessionId, userMessage, model, systemPrompt, skills, onEvent }) {
   const provider = model || "auto";
 
   // 1. Classify task once (reused for every round → consistent routing, cheap)
@@ -32,6 +36,7 @@ export async function runAgent({ env, sessionId, userMessage, model, systemPromp
     .filter((r) => r.role === "user" || r.role === "assistant")
     .map((r) => ({ role: r.role, content: String(r.content ?? "") }));
   const { task, source } = await classifyTask(env, userMessage);
+  if (onEvent) await onEvent({ type: "meta", task, routedBy: source });
 
   const memoryBlock = await getMemoryBlock(env, 20);
 
@@ -72,8 +77,27 @@ export async function runAgent({ env, sessionId, userMessage, model, systemPromp
 
   // 2. Agent loop — chat() handles provider/routing/fallback per round
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-    const out = await chat(env, messages, { provider, task });
+    // Streaming filter: tool calls are JSON ({"tool": ...}) and must not be shown
+    // as chat text, so a reply whose first non-space char is "{" is buffered and
+    // only forwarded if it turns out not to be a tool call. Anything else streams live.
+    let mode = null, acc = "", streamed = false;
+    const onDelta = onEvent
+      ? async (t) => {
+          acc += t;
+          if (mode === null) {
+            const head = acc.trimStart();
+            if (!head) return;
+            mode = head[0] === "{" ? "buffer" : "live";
+            if (mode === "live") { streamed = true; await onEvent({ type: "delta", text: acc }); }
+            return;
+          }
+          if (mode === "live") { streamed = true; await onEvent({ type: "delta", text: t }); }
+        }
+      : undefined;
+
+    const out = await chat(env, messages, { provider, task, onDelta });
     lastModelInfo = out;
+    if (onEvent) await onEvent({ type: "round_meta", modelUsed: out.model, providerUsed: out.provider });
 
     const replyText = out.text ?? "";
     const parsed = tryParseToolCall(replyText);
@@ -81,6 +105,10 @@ export async function runAgent({ env, sessionId, userMessage, model, systemPromp
     if (parsed && enabledToolNames.includes(parsed.tool)) {
       const result = await runTool(env, parsed.tool, parsed.args || {});
       toolCalls.push({ tool: parsed.tool, args: parsed.args, result });
+      if (onEvent) {
+        if (streamed) await onEvent({ type: "reset" }); // text shown before the tool call is dropped
+        await onEvent({ type: "tool", tool: parsed.tool, args: parsed.args, result });
+      }
 
       messages.push({ role: "assistant", content: replyText.trim() });
       messages.push({
@@ -91,6 +119,8 @@ export async function runAgent({ env, sessionId, userMessage, model, systemPromp
     }
 
     finalText = replyText;
+    // buffered "{..." reply that was not a (valid/enabled) tool call → release it now
+    if (onEvent && mode === "buffer") await onEvent({ type: "delta", text: replyText });
     break;
   }
 

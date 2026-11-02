@@ -9,8 +9,9 @@
 //   Workers AI agent model missing (-fast removed) → retry fallback model
 
 import { classifyTask, roleModels, heuristicTask } from "./router.js";
+import { readSSE, chunkText } from "./sse.js";
 import {
-  runAI, isExhausted, markExhausted, isQuotaError,
+  runAI, runAIStream, isExhausted, markExhausted, isQuotaError,
   getProviderOverride, getTodayNeurons, neuronThreshold,
 } from "./usage.js";
 
@@ -27,7 +28,11 @@ export function listProviders(env) {
 }
 
 // ---- Workers AI (all calls go through runAI → neuron accounting) ----
-async function callWorkersAI(env, messages, model) {
+async function callWorkersAI(env, messages, model, onDelta) {
+  if (onDelta) {
+    const { text } = await runAIStream(env, model, { messages }, onDelta);
+    return { text, provider: "workers_ai", model };
+  }
   const res = await runAI(env, model, {
     messages,
     stream: false,
@@ -37,7 +42,7 @@ async function callWorkersAI(env, messages, model) {
 }
 
 // Call Workers AI with quota bookkeeping + model fallbacks.
-async function callWorkersAISmart(env, messages, task) {
+async function callWorkersAISmart(env, messages, task, onDelta) {
   const m = roleModels(env);
   const chain = task === "code"
     ? [m.code, m.codeFallback]
@@ -46,10 +51,11 @@ async function callWorkersAISmart(env, messages, task) {
   let lastErr;
   for (const model of chain) {
     try {
-      return await callWorkersAI(env, messages, model);
+      return await callWorkersAI(env, messages, model, onDelta);
     } catch (e) {
       lastErr = e;
       const msg = String(e?.message || e);
+      if (onDelta?.emitted) break; // already streamed text → can't switch model
       if (/not found|does not exist|invalid model|deprecated/i.test(msg)) {
         continue; // try next model in chain
       }
@@ -67,7 +73,7 @@ export function sanitizeMessages(messages) {
 
 // ---- Custom LLM endpoint (any OpenAI-compatible format: OpenAI, OpenRouter,
 // DeepSeek, Moonshot, Groq, Ollama, vLLM, local/free relays, ...) ----
-async function callCustom(env, messages, task) {
+async function callCustom(env, messages, task, onDelta) {
   if (!env.LLM_API_KEY || !env.LLM_BASE_URL) {
     throw new Error("custom API not configured: set LLM_API_KEY + LLM_BASE_URL (env vars / GitHub Secrets)");
   }
@@ -80,14 +86,31 @@ async function callCustom(env, messages, task) {
       "Content-Type": "application/json",
       ...(env.LLM_AUTH_HEADER ? { [env.LLM_AUTH_HEADER]: env.LLM_API_KEY } : { Authorization: "Bearer " + env.LLM_API_KEY }),
     },
-    body: JSON.stringify({ model, messages: sanitizeMessages(messages), temperature: 0.4 }),
+    body: JSON.stringify({
+      model, messages: sanitizeMessages(messages), temperature: 0.4,
+      ...(onDelta ? { stream: true } : {}),
+    }),
   });
   if (!res.ok) {
     const t = await res.text().catch(() => "");
     throw new Error("custom API " + res.status + ": " + t.slice(0, 300));
   }
+  // Streaming: read SSE deltas. Some relays ignore stream:true and answer with
+  // plain JSON — detect that by content-type and fall through to the JSON path.
+  const ctype = res.headers.get("content-type") || "";
+  if (onDelta && res.body && /text\/event-stream/i.test(ctype)) {
+    let text = "";
+    await readSSE(res.body, async (payload) => {
+      let obj;
+      try { obj = JSON.parse(payload); } catch { return; }
+      const t = chunkText(obj);
+      if (t) { text += t; await onDelta(t); }
+    });
+    return { text, provider: "custom", model };
+  }
   const data = await res.json();
   const msg = data.choices?.[0]?.message;
+  if (onDelta && typeof msg?.content === "string" && msg.content) await onDelta(msg.content);
   return {
     text: msg?.content ?? "",
     tool_calls: msg?.tool_calls,
@@ -101,9 +124,17 @@ export function customApiConfigured(env) {
 }
 
 // ---- Unified entry ----
-// opts: { provider?: "auto"|"workers_ai"|"custom", task?: "chat"|"agent"|"code" }
+// opts: { provider?: "auto"|"workers_ai"|"custom", task?: "chat"|"agent"|"code",
+//         onDelta?: (text) => void }  ← when set, the model output is streamed
 export async function chat(env, messages, opts = {}) {
   let provider = opts.provider || "auto";
+  // Track whether any text reached the caller: after that, falling back to
+  // another model/provider would duplicate output, so we surface the error.
+  let onDelta = opts.onDelta;
+  if (onDelta) {
+    const inner = onDelta;
+    onDelta = async (t) => { onDelta.emitted = true; await inner(t); };
+  }
 
   // Manual override wins over "auto"
   if (provider === "auto") {
@@ -119,7 +150,7 @@ export async function chat(env, messages, opts = {}) {
     if (exhausted && customApiConfigured(env)) {
       const lastUser = [...messages].reverse().find((m) => m.role === "user");
       const task = opts.task || heuristicTask(lastUser?.content || "");
-      return callCustom(env, messages, task);
+      return callCustom(env, messages, task, onDelta);
     }
   }
 
@@ -133,21 +164,21 @@ export async function chat(env, messages, opts = {}) {
   task = task || "chat";
 
   if (provider === "custom") {
-    return callCustom(env, messages, task);
+    return callCustom(env, messages, task, onDelta);
   }
 
   if (provider === "workers_ai") {
     // Forced free tier: call even if exhausted (user explicitly asked)
-    return callWorkersAISmart(env, messages, task);
+    return callWorkersAISmart(env, messages, task, onDelta);
   }
 
   // provider === "auto" (not exhausted — handled by fast path above)
   try {
-    return await callWorkersAISmart(env, messages, task);
+    return await callWorkersAISmart(env, messages, task, onDelta);
   } catch (e) {
-    if (customApiConfigured(env) && isQuotaError(e)) {
+    if (customApiConfigured(env) && isQuotaError(e) && !onDelta?.emitted) {
       await markExhausted(env).catch(() => {});
-      return callCustom(env, messages, task);
+      return callCustom(env, messages, task, onDelta);
     }
     throw e;
   }
