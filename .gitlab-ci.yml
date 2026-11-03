@@ -1,0 +1,54 @@
+# GitHub -> GitLab 單向同步
+#
+# 需要在 GitLab 專案 Settings > CI/CD > Variables 設定:
+#   GITHUB_REPO      (必填) 例如 your-name/your-repo (不含 https://github.com/)
+#   GITHUB_TOKEN     (私有 repo 必填, 公開 repo 可省略) GitHub PAT, 只需 read 權限, 勾選 Masked
+#   GITLAB_PUSH_TOKEN(必填) GitLab Project Access Token, 角色 Maintainer, 權限 write_repository, 勾選 Masked
+#   FORCE_PUSH       (選填) 設為 "true" 時以 force 方式覆蓋 GitLab 分支 (需在 GitLab 允許受保護分支 force push)
+#
+# 觸發方式: Build > Pipeline schedules 新增排程 (例如每 30 分鐘), 或手動 Run pipeline,
+#          或由 GitHub Actions / webhook 呼叫 GitLab pipeline trigger API 即時同步。
+
+stages:
+  - sync
+
+sync-from-github:
+  stage: sync
+  image: alpine/git:latest
+  rules:
+    # 只在排程 / 手動 / API 觸發時執行, 避免 push 後自我觸發造成無限迴圈
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+  variables:
+    GIT_STRATEGY: none        # 不需要 checkout GitLab 的程式碼
+    GITHUB_REPO: scupro/agents-workers
+  script:
+    - |
+      set -eu
+      : "${GITHUB_REPO:?請設定 GITHUB_REPO}"
+      : "${GITLAB_PUSH_TOKEN:?請設定 GITLAB_PUSH_TOKEN}"
+
+      if [ -n "${GITHUB_TOKEN:-}" ]; then
+        SRC="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git"
+      else
+        SRC="https://github.com/${GITHUB_REPO}.git"
+      fi
+      DST="https://oauth2:${GITLAB_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+
+      git config --global user.name  "gitlab-ci-sync"
+      git config --global user.email "gitlab-ci-sync@localhost"
+
+      echo ">> 從 GitHub 取得最新內容"
+      git clone --bare "$SRC" repo.git
+      cd repo.git
+
+      PLUS=""
+      if [ "${FORCE_PUSH:-false}" = "true" ]; then PLUS="+"; fi
+
+      echo ">> 推送分支與標籤到 GitLab"
+      git push --prune "$DST" \
+        "${PLUS}refs/heads/*:refs/heads/*" \
+        "${PLUS}refs/tags/*:refs/tags/*"
+
+      echo ">> 同步完成"
